@@ -3,24 +3,25 @@
 nsdec.py
 Encrypt and decrypt files using a fixed 0x84 XOR key.
 
-Examples:
-    # Decrypt a .dat file (default cp932 -> UTF-8)
-    ./nsdec.py -i nscript.dat
+Examples
+========
+  # Decrypt a .dat file (default cp932 -> UTF-8)
+  ./nsdec.py -i nscript.dat
 
-    # Decrypt a .dat file using shift_jis decoding
-    ./nsdec.py -i nscript.dat --open-with-encoding shift_jis
+  # Decrypt a .dat file using shift_jis decoding
+  ./nsdec.py -i nscript.dat --open-with-encoding shift_jis
 
-    # Decrypt without converting to utf-8
-    ./nsdec.py -i nscript.dat --no-conv
+  # Decrypt without converting to utf-8
+  ./nsdec.py -i nscript.dat --no-conv
 
-    # Encrypt a .txt file back into a .dat
-    ./nsdec.py -i nscript.txt
+  # Encrypt a .txt file back into a .dat
+  ./nsdec.py -i nscript.txt
 
-    # In-place edit a .dat with no conversion (validates CP932 and opens VS Code)
-    ./nsdec.py -i nscript.dat --edit-in-place
+  # In-place edit a .dat with no conversion (validates CP932 and opens VS Code)
+  ./nsdec.py -i nscript.dat --edit-in-place
 
-    # Use a custom editor command that waits for close (must block until exit)
-    ./nsdec.py -i nscript.dat --edit-in-place --editor "code -w"
+  # Use a custom editor command that waits for close (must block until exit)
+  ./nsdec.py -i nscript.dat --edit-in-place --editor "code -w"
 """
 
 import os

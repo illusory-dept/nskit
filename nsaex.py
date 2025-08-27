@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-nsaout.py - arc.nsa extractor
+nsaout.py
+Extract arc.nsa files.
 
-Usage:
+Usage
+=====
   # basic extraction
   python nsa_extract.py -i /path/to/game -o ./arc
 
@@ -30,13 +32,14 @@ Usage:
   # bypass expanded_size vs expected BMP size check (advanced)
   python nsa_extract.py -i . -o ./arc --spb-skip-sizecheck
 
-Desc:
-  - Finds arc.nsa and arc#.nsa and extracts contents.
-  - .bmp entries:
-      - If bytes start with 'BM' -> written as-is.
-      - If LZSS magic (0xA153) at 0 or +2 -> decompress to BMP.
-      - Else, attempts SPB -> 24-bit BMP only if plausible; otherwise keeps original.
-  - .nbz entries: strips 4-byte header and uses Python bz2 to also write a sibling .wav.
+Desc
+====
+- Finds arc.nsa and arc#.nsa and extracts contents.
+- .bmp entries:
+  - If bytes start with 'BM' -> written as-is.
+  - If LZSS magic (0xA153) at 0 or +2 -> decompress to BMP.
+  - Else, attempts SPB -> 24-bit BMP only if plausible; otherwise keeps original.
+- .nbz entries: strips 4-byte header and uses Python bz2 to also write a sibling .wav.
 
 """
 

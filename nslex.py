@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""
+nslex.py
+Tokenize nscript.dat/0.txt/...
+
+usage: nslex.py [-h] -i INPUT [-l LABEL]
+"""
+
 import os
 import sys
 import argparse
@@ -710,7 +718,9 @@ class Lexer:
                 break
         self.i = self._eat_comma(i)
         self.text_mode = True
-        return Token(TK_TEXT, "".join(b), i, self.line, self.end, self.wait_at, tok_color)
+        return Token(
+            TK_TEXT, "".join(b), i, self.line, self.end, self.wait_at, tok_color
+        )
 
     def _maybe_wait(self, old_buf, i):
         if self.wait_at is None and self.click:

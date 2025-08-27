@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 nsdia.py
-
 Extract dialog text from nscript.dat/0.txt/...
 
 - Converts '\' waits to newlines and removes '@' waits from dialogue
 
-Usage:
+Usage
+=====
   nsdia.py -i PATH/TO/SCRIPT_DIR [-o OUTPUT.txt]
 """
 

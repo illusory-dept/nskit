@@ -1,3 +1,17 @@
+#!/usr/bin/env python3
+"""
+nscli.py
+Play (p)(o)nscripter games in your terminal.
+
+usage:
+  python3 nscli.py [-h] -i INPUT [-l LABEL] [--cps CPS] [--show-labels] [--comments]
+  [-a ASSETS] [-c]
+
+dependencies
+============
+1. ffmpeg (ffplay)
+"""
+
 import argparse
 import sys
 import time

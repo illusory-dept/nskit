@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
 cp932conv.py
-
-Convert text files from a given single-byte encoding (default: CP932/Shift-JIS) to UTF-8.
+Convert text files from a given single-byte encoding (default: CP932) to UTF-8.
 
 USAGE
-------
+=====
 File mode (verify encoding, then convert):
     python cp932_to_utf8_refactor.py -i /path/to/file.txt
 
@@ -32,7 +31,7 @@ Try a different source encoding (default: cp932):
     python cp932_to_utf8_refactor.py -i file.txt --encoding euc_jp
 
 Behavior
---------
+========
 - If -i/--input points to a *file*: verify it can be decoded using the chosen encoding
   (default cp932). If decodable, write UTF-8 to <basename>.utf8.txt (or to -o if provided).
   If not decodable, skip and print a message.
@@ -46,7 +45,7 @@ Behavior
     * If it does not decode, skip and print a skip message.
 
 Notes
------
+=====
 - "cp932" and "shift_jis" are often interchangeable; this script defaults to "cp932".
 - Newlines are normalized by Python's text I/O; output uses UTF-8 with default newline handling.
 """

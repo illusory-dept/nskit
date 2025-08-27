@@ -24,6 +24,12 @@ Usage:
   # cap per-image SPB work time (milliseconds); on timeout keep original
   python nsa_extract.py -i . -o ./arc --spb-timeout-ms 1500
 
+  # bypass plausibility guard (advanced; may try more SPB variants)
+  python nsa_extract.py -i . -o ./arc --spb-skip-plausibility
+
+  # bypass expanded_size vs expected BMP size check (advanced)
+  python nsa_extract.py -i . -o ./arc --spb-skip-sizecheck
+
 Desc:
   - Finds arc.nsa and arc#.nsa and extracts contents.
   - .bmp entries:
@@ -131,6 +137,7 @@ class BitReader:
 @dataclass
 class NSAEntry:
     name: str
+    compression_flag: int
     rel_offset: int
     stored_size: int
     expanded_size: int
@@ -180,13 +187,14 @@ def parse_entries(f: io.BufferedReader, count: int) -> list[NSAEntry]:
     entries: list[NSAEntry] = []
     for _ in range(count):
         name = read_cstring(f).decode("shift_jis", errors="replace")
-        dummy = f.read(1)  # unused
-        if len(dummy) != 1:
-            raise EOFError("Unexpected EOF reading directory dummy byte")
+        comp_b = f.read(1)
+        if len(comp_b) != 1:
+            raise EOFError("Unexpected EOF reading directory compression flag")
+        compression_flag = comp_b[0]
         rel_offset = u32be(f.read(4))
         stored = u32be(f.read(4))
         expanded = u32be(f.read(4))
-        entries.append(NSAEntry(name, rel_offset, stored, expanded))
+        entries.append(NSAEntry(name, compression_flag, rel_offset, stored, expanded))
     return entries
 
 
@@ -195,15 +203,14 @@ def parse_entries(f: io.BufferedReader, count: int) -> list[NSAEntry]:
 # -------------------------------
 
 
-def lzss_decompress(data: bytes, out_size: int, skip_first_two: bool = False) -> bytes:
+def lzss_decompress(data: bytes, out_size: int, start_offset: int = 0) -> bytes:
     """
     LZSS variant:
       - 1-bit flags; 1 -> literal(8), 0 -> backref(offset 8, length (4)+2)
       - 256 ring buffer, initial zeros, pos = 256 - 17
       - Stops after out_size bytes or EOF.
     """
-    start = 2 if skip_first_two else 0
-    br = BitReader(data, start=start)
+    br = BitReader(data, start=start_offset)
     RING = bytearray(256)
     bufpos = 256 - 17
     out = bytearray()
@@ -257,7 +264,12 @@ def expected_24bpp_bmp_size(w: int, h: int) -> int:
     return 14 + 40 + h * (row + pad)
 
 
-def spb_to_bmp(spb: bytes, timeout_ms: int | None = 1500) -> bytes:
+def spb_to_bmp(
+    spb: bytes,
+    timeout_ms: int | None = 1500,
+    scan: str = "zigzag",  # or "linear"
+    plane: str = "bgr",  # or "rgb"
+) -> bytes:
     """
     Convert SPB-like delta-coded image to a 24-bit BMP.
     Layout: u16_be width, u16_be height, then bit-coded plane data.
@@ -284,8 +296,13 @@ def spb_to_bmp(spb: bytes, timeout_ms: int | None = 1500) -> bytes:
     if timeout_ms is not None and timeout_ms > 0:
         deadline = time.perf_counter() + (timeout_ms / 1000.0)
 
-    # decode planes: B, G, R so bytes line up with BMP BGR
-    for plane in (2, 1, 0):
+    # decode planes in requested order so bytes line up with BMP BGR/RGB
+    if plane.lower() == "rgb":
+        plane_order = (0, 1, 2)
+    else:
+        plane_order = (2, 1, 0)
+
+    for plane_idx in plane_order:
         dest_i = 0
         try:
             ch = get_u8()
@@ -329,38 +346,48 @@ def spb_to_bmp(spb: bytes, timeout_ms: int | None = 1500) -> bytes:
             if dest_i < pix_count:
                 tmp[dest_i:pix_count] = bytes((ch,)) * (pix_count - dest_i)
 
-        # interlaced write into rgb_data (forward row then reverse row)
-        p = 0
-        q = plane
+        # map decoded plane into rgb_data according to scan pattern
         rgb = rgb_data
         stride3 = width * 3
-        half_rows = height // 2
-
-        for _ in range(half_rows):
-            # forward row
-            qq = q
-            endp = p + width
-            while p < endp:
-                rgb[qq] = tmp[p]
-                p += 1
-                qq += 3
-            q = qq + stride3
-            # reverse row
-            qq -= 3
-            endp = p + width
-            while p < endp:
-                rgb[qq] = tmp[p]
-                p += 1
+        p = 0
+        if scan == "linear":
+            # straight left-to-right, top-to-bottom
+            for y in range(height):
+                base = y * stride3
+                q = base + plane_idx
+                for x in range(width):
+                    rgb[q] = tmp[p]
+                    p += 1
+                    q += 3
+        else:
+            # zigzag (forward row then reverse row)
+            q = plane_idx
+            half_rows = height // 2
+            for _ in range(half_rows):
+                # forward row
+                qq = q
+                endp = p + width
+                while p < endp:
+                    rgb[qq] = tmp[p]
+                    p += 1
+                    qq += 3
+                q = qq + stride3
+                # reverse row
                 qq -= 3
-            q = qq + 3 + stride3
+                endp = p + width
+                while p < endp:
+                    rgb[qq] = tmp[p]
+                    p += 1
+                    qq -= 3
+                q = qq + 3 + stride3
 
-        if height & 1:
-            qq = q
-            endp = p + width
-            while p < endp:
-                rgb[qq] = tmp[p]
-                p += 1
-                qq += 3
+            if height & 1:
+                qq = q
+                endp = p + width
+                while p < endp:
+                    rgb[qq] = tmp[p]
+                    p += 1
+                    qq += 3
 
     # bottom-up BMP with row padding
     row_bytes = width * 3
@@ -390,7 +417,14 @@ def spb_to_bmp(spb: bytes, timeout_ms: int | None = 1500) -> bytes:
 
 
 def detect_and_process_bmp(
-    raw: bytes, expanded_size: int, spb_mode: str, spb_timeout_ms: Optional[int]
+    raw: bytes,
+    expanded_size: int,
+    spb_mode: str,
+    spb_timeout_ms: Optional[int],
+    spb_skip_plausibility: bool = False,
+    spb_skip_sizecheck: bool = False,
+    spb_scan: str = "zigzag",
+    spb_plane: str = "bgr",
 ) -> Tuple[Optional[bytes], str]:
     """
     Decide how to handle a .bmp entry.
@@ -401,6 +435,7 @@ def detect_and_process_bmp(
         - status: string reason, one of:
             "raw_bmp"                 - already a BMP, kept as-is
             "lzss_decompressed"       - LZSS -> BMP ok
+            "bz2_decompressed"        - BZip2 -> BMP ok
             "spb_converted"           - SPB -> BMP ok
             "spb_skip_implausible"    - SPB header implausible or too big
             "spb_skip_mismatch"       - expanded_size not consistent with 24bpp BMP
@@ -412,24 +447,43 @@ def detect_and_process_bmp(
     if len(raw) >= 2 and raw[:2] == b"BM":
         return (None, "raw_bmp")  # signal "write original" to caller
 
-    # Case 2: LZSS -> BMP
-    lzss_direct = len(raw) >= 2 and raw[0:2] == b"\xa1\x53"
-    lzss_offset2 = len(raw) >= 4 and raw[2:4] == b"\xa1\x53"
-    if lzss_direct or lzss_offset2:
+    # Case 1.5: BZip2-compressed BMP (some archives store 4-byte size then BZh)
+    for bz_off in (0, 4):
+        if len(raw) >= bz_off + 3 and raw[bz_off : bz_off + 3] == b"BZh":
+            try:
+                decomp = bz2.decompress(raw[bz_off:])
+                if len(decomp) >= 2 and decomp[:2] == b"BM":
+                    return (decomp, "bz2_decompressed")
+            except Exception:
+                pass
+
+    # Case 2: LZSS -> BMP (search for magic within first 16 bytes)
+    lz_off = -1
+    scan_max = min(16, len(raw) - 1)
+    for off in range(0, scan_max):
+        if raw[off : off + 2] == b"\xa1\x53":
+            lz_off = off
+            break
+    if lz_off >= 0:
         try:
-            out = lzss_decompress(
-                raw, out_size=expanded_size, skip_first_two=lzss_offset2
-            )
-            return (out, "lzss_decompressed")
+            out = lzss_decompress(raw, out_size=expanded_size, start_offset=lz_off)
+            if len(out) >= 2 and out[:2] == b"BM":
+                return (out, "lzss_decompressed")
+            # If it doesn't look like BMP, treat as error to try SPB path
         except Exception:
-            return (None, "spb_skip_error")
+            pass
 
     # Case 3: SPB?
     plausible, w, h = spb_plausible(raw)
     if not plausible:
-        return (None, "spb_skip_implausible")
+        if not spb_skip_plausibility:
+            return (None, "spb_skip_implausible")
+        # proceed anyway; try using header width/height if present
+        if len(raw) >= 4:
+            w = (raw[0] << 8) | raw[1]
+            h = (raw[2] << 8) | raw[3]
 
-    if expanded_size and expanded_size > 0:
+    if not spb_skip_sizecheck and expanded_size and expanded_size > 0:
         expected = expected_24bpp_bmp_size(w, h)
         if abs(expected - expanded_size) > 8:
             return (None, "spb_skip_mismatch")
@@ -444,6 +498,8 @@ def detect_and_process_bmp(
             timeout_ms=(
                 spb_timeout_ms if spb_timeout_ms and spb_timeout_ms > 0 else 1500
             ),
+            scan=spb_scan,
+            plane=spb_plane,
         )
         return (out, "spb_converted")
     except TimeoutError:
@@ -485,8 +541,13 @@ def process_file_bytes(
     name: str,
     data: bytes,
     expanded_size: int,
+    compression_flag: Optional[int],
     spb_mode: str,
     spb_timeout_ms: Optional[int],
+    spb_skip_plausibility: bool = False,
+    spb_skip_sizecheck: bool = False,
+    spb_scan: str = "zigzag",
+    spb_plane: str = "bgr",
 ) -> Tuple[Optional[bytes], bool, str]:
     """
     Returns (bytes_to_write, should_write, status_text).
@@ -497,20 +558,104 @@ def process_file_bytes(
     For .nbz and others: write as before.
     """
     ext = Path(name).suffix.lower().lstrip(".")
+    # Use compression flag (arc.md) as a helper
+    flag = compression_flag or 0
+
+    # NBZ audio: prefer to return decompressed WAV bytes
     if ext == "nbz":
+        # Preserve legacy behavior for .nbz: write payload and let side-effect create .wav
+        payload = data[4:] if len(data) >= 4 else data
+        return (payload, True, "nbz_payload")
+    if flag == 4:
+        # Flagged NBZ but not named .nbz: return decompressed WAV bytes if possible
+        for bz_off in (0, 4):
+            if len(data) >= bz_off + 3 and data[bz_off : bz_off + 3] == b"BZh":
+                try:
+                    wav = bz2.decompress(data[bz_off:])
+                    return (wav, True, "nbz_decompressed")
+                except Exception:
+                    pass
         payload = data[4:] if len(data) >= 4 else data
         return (payload, True, "nbz_payload")
 
     if ext == "bmp":
+        # If flagged LZSS, try that path first; expect BMP output
+        if flag == 2:
+            try:
+                lz_off = -1
+                scan_max = min(16, len(data) - 1)
+                for off in range(0, scan_max):
+                    if data[off : off + 2] == b"\xa1\x53":
+                        lz_off = off
+                        break
+                if lz_off >= 0:
+                    out = lzss_decompress(
+                        data, out_size=expanded_size, start_offset=lz_off
+                    )
+                    if len(out) >= 2 and out[:2] == b"BM":
+                        return (out, True, "lzss_decompressed_flag")
+            except Exception:
+                pass
+
+        # If flagged SPB, try SPB conversion first
+        if flag == 1:
+            plausible, w, h = spb_plausible(data)
+            try:
+                if plausible or spb_skip_plausibility:
+                    if (
+                        not spb_skip_sizecheck
+                        and expanded_size
+                        and expanded_size > 0
+                        and len(data) >= 4
+                    ):
+                        expected = expected_24bpp_bmp_size(w, h)
+                        if abs(expected - expanded_size) <= 8:
+                            out = spb_to_bmp(
+                                data,
+                                timeout_ms=(
+                                    spb_timeout_ms
+                                    if spb_timeout_ms and spb_timeout_ms > 0
+                                    else 1500
+                                ),
+                                scan=spb_scan,
+                                plane=spb_plane,
+                            )
+                            return (out, True, "spb_converted_flag")
+                    else:
+                        out = spb_to_bmp(
+                            data,
+                            timeout_ms=(
+                                spb_timeout_ms
+                                if spb_timeout_ms and spb_timeout_ms > 0
+                                else 1500
+                            ),
+                            scan=spb_scan,
+                            plane=spb_plane,
+                        )
+                        return (out, True, "spb_converted_flag")
+            except Exception:
+                pass
+
         transformed, status = detect_and_process_bmp(
-            data, expanded_size, spb_mode, spb_timeout_ms
+            data,
+            expanded_size,
+            # downstream heuristics still apply; flag already tried above
+            spb_mode,
+            spb_timeout_ms,
+            spb_skip_plausibility,
+            spb_skip_sizecheck,
+            spb_scan,
+            spb_plane,
         )
 
         if status == "raw_bmp":
             # already BMP -> keep original bytes
             return (data, True, status)
 
-        if status in ("lzss_decompressed", "spb_converted") and transformed is not None:
+        if (
+            status in ("lzss_decompressed", "bz2_decompressed", "spb_converted")
+            and transformed is not None
+        ):
             return (transformed, True, status)
 
         # All other statuses -> do not write this entry
@@ -563,6 +708,10 @@ def extract_volume(
     hexdump_n: Optional[int],
     spb_mode: str,
     spb_timeout_ms: Optional[int],
+    spb_skip_plausibility: bool = False,
+    spb_skip_sizecheck: bool = False,
+    spb_scan: str = "zigzag",
+    spb_plane: str = "bgr",
     save_skips_dir: Optional[Path] = None,
 ):
     with open(vol_path, "rb") as f:
@@ -584,7 +733,16 @@ def extract_volume(
                     hexdump_preview(e.name, raw, hexdump_n)
 
                 out_bytes, should_write, status = process_file_bytes(
-                    e.name, raw, e.expanded_size, spb_mode, spb_timeout_ms
+                    e.name,
+                    raw,
+                    e.expanded_size,
+                    e.compression_flag,
+                    spb_mode,
+                    spb_timeout_ms,
+                    spb_skip_plausibility=spb_skip_plausibility,
+                    spb_skip_sizecheck=spb_skip_sizecheck,
+                    spb_scan=spb_scan,
+                    spb_plane=spb_plane,
                 )
 
                 if should_write and out_bytes is not None:
@@ -594,7 +752,7 @@ def extract_volume(
                     write_bytes(out_path, out_bytes)
                     postprocess_side_effects(e.name, out_path)
                     print(
-                        f"  #{i:04d} {e.name} [{status}] off=0x{header.base_offset + e.rel_offset:08X} "
+                        f"  #{i:04d} {e.name} [{status}] flag={e.compression_flag} off=0x{header.base_offset + e.rel_offset:08X} "
                         f"stored=0x{e.stored_size:08X} expanded=0x{e.expanded_size:08X}"
                     )
                 else:
@@ -603,7 +761,7 @@ def extract_volume(
                         dest = save_skip_bytes(save_skips_dir, e.name, raw, status)
                         saved_msg = f" -> saved: {dest}"
                     print(
-                        f"  #{i:04d} {e.name} SKIPPED ({status}) off=0x{header.base_offset + e.rel_offset:08X} "
+                        f"  #{i:04d} {e.name} SKIPPED ({status}) flag={e.compression_flag} off=0x{header.base_offset + e.rel_offset:08X} "
                         f"stored=0x{e.stored_size:08X} expanded=0x{e.expanded_size:08X}{saved_msg}"
                     )
 
@@ -696,6 +854,28 @@ def main(argv=None):
         help="Per-image SPB decode time budget in ms (auto/convert modes). 0 = unlimited.",
     )
     ap.add_argument(
+        "--spb-skip-plausibility",
+        action="store_true",
+        help="Attempt SPB->BMP even if header looks implausible (advanced)",
+    )
+    ap.add_argument(
+        "--spb-skip-sizecheck",
+        action="store_true",
+        help="Ignore expanded_size vs expected 24bpp BMP mismatch (advanced)",
+    )
+    ap.add_argument(
+        "--spb-scan",
+        choices=["zigzag", "linear"],
+        default="zigzag",
+        help="SPB pixel order mapping: zigzag (default) or linear",
+    )
+    ap.add_argument(
+        "--spb-plane",
+        choices=["bgr", "rgb"],
+        default="bgr",
+        help="SPB plane order: bgr (default) or rgb",
+    )
+    ap.add_argument(
         "--save-skips-dir",
         type=Path,
         default=None,
@@ -728,6 +908,10 @@ def main(argv=None):
                 spb_timeout_ms=(
                     None if args.spb_timeout_ms == 0 else args.spb_timeout_ms
                 ),
+                spb_skip_plausibility=args.spb_skip_plausibility,
+                spb_skip_sizecheck=args.spb_skip_sizecheck,
+                spb_scan=args.spb_scan,
+                spb_plane=args.spb_plane,
                 save_skips_dir=args.save_skips_dir,
             )
         except Exception as ex:

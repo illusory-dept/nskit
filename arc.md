@@ -8,8 +8,6 @@ Directory
 Data Block
 ```
 
----
-
 ## 2. Header - 6 (or 7) bytes
 
 ### Optional pad - 1 byte?
@@ -23,8 +21,6 @@ Number of directory entries.
 ### `global_data_base_offset` (32-bit, big-endian) - 4 bytes
 
 Absolute position in file where the packed data block begins.
-
----
 
 ## 3. Directory (Repeated `object_count` times)
 
@@ -56,8 +52,6 @@ Number of bytes stored in archive for this file.
 Expected size after decompression.
 May be 0 for SPB or NBZ.
 
----
-
 ## 4. Data Block
 
 - Begins at global_data_base_offset.
@@ -70,5 +64,3 @@ For each file:
 	start = global_data_base_offset + rel_offset
 	length = stored_size
 ```
-
----

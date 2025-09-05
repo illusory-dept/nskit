@@ -1,12 +1,12 @@
 Current tools:
   nsaex.py          arc.nsa extractor
   nsdec.py          nscript.dat encryption/decryption
-  cp932conv.py      shift_jis -> utf-8
-  nslex.py          nscript.dat parser
+  cp932conv.py      cp932(sjis) -> utf-8
+  nslex.py          nscript.dat lexer
 
 The following tools depend on nslex.py:
   nsdia.py          extract dialogs from nscript.dat
-  nscli.py          play vn in your terminal
+  nscli.py          play (p)(o)ns games in your terminal
 
 Current docs:
-  arcnsa.md   an analysis of the structure of arc.nsa files
+  d/arc.md          the structure of arc.nsa files
